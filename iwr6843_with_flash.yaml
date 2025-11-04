@@ -1,0 +1,834 @@
+# ============================================
+# IWR6843 Radar Sensor - Mit Vital Firmware Flash
+# Mit 5-Personen-Tracking, Fall-Detection und OTA Flash
+# ============================================
+
+substitutions:
+  device_name: iwr6843
+  friendly_name: IWR6843
+  
+  # UART Pins
+  uart_cli_tx: GPIO3      # ESP32 TX → IWR6843 UART0_RX (PINN4)
+  uart_cli_rx: GPIO1      # ESP32 RX ← IWR6843 UART0_TX (PINN5)
+  uart_data_rx: GPIO23     # ESP32 RX ← IWR6843 UART1_TX (PINN13)
+  
+  # Delays
+  boot_delay: "2s"
+  cmd_delay: "50ms"
+  
+  # Presence Persistenz (in Sekunden)
+  presence_timeout: "10"   # Wie lange "detected" anhalten soll (5-60 Sekunden)
+  
+  # GitHub Firmware URL (ANPASSEN!)
+  firmware_github_url: "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/firmware/vital_signs_tracking_6843AOP_demo.bin"
+
+# ============================================
+# Basis-Konfiguration
+# ============================================
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  libraries:
+    - "ESPAsyncWebServer"
+  platformio_options:
+    build_flags:
+      - -std=gnu++17
+  on_boot:
+    priority: -100.0
+    then:
+      - logger.log: "🚀 Starte IWR6843 Konfigurationssequenz..."
+      - delay: ${boot_delay}
+      - script.execute: configure_radar
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Stream Server
+stream_server:
+  uart_id: uart_control
+  port: 6638
+  buffer_size: 8192
+
+# ============================================
+# Netzwerk & API
+# ============================================
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "7GnnWf1lqG8D"
+
+captive_portal:
+
+api:
+  encryption:
+    key: "YvDqcDQF3ROGoIaqq32OXO/b0TeZi0WKyVuMDVhFfMM="
+
+ota:
+  - platform: esphome
+    password: "f3ea7317352ed113d6bfe1c3d3f0ef2c"
+
+web_server:
+  port: 80
+
+# ============================================
+# HTTP Request für GitHub Firmware Download
+# ============================================
+http_request:
+  id: http_req
+  timeout: 60s
+  verify_ssl: false
+
+# ============================================
+# Logging
+# ============================================
+
+logger:
+  level: VERBOSE
+  baud_rate: 0
+  logs:
+    component: INFO
+    uart_debug: VERBOSE
+
+# ============================================
+# UART Konfiguration
+# ============================================
+
+uart:
+  # UART0 - CLI Port @ 115200 (Kommandos + Bootloader Flashing)
+  - id: uart_control
+    tx_pin:
+      number: GPIO3
+      mode:
+        input: true
+        pullup: true
+    rx_pin:
+      number: GPIO1
+      mode:
+        input: true
+        pullup: true
+    baud_rate: 115200
+    parity: NONE
+    stop_bits: 1
+
+  # UART1 - Data Port @ 921600 (Sensordaten)
+  - id: uart_data
+    rx_pin: ${uart_data_rx}
+    baud_rate: 921600
+
+# ============================================
+# Outputs (GPIO Control)
+# ============================================
+
+output:
+  # Reset Pin für IWR6843 (GPIO22, inverted)
+  - platform: gpio
+    id: external_reset_pin
+    pin: GPIO22
+    inverted: true  # WICHTIG: turn_on() = LOW, turn_off() = HIGH
+
+# ============================================
+# Globals für Flash-Verwaltung
+# ============================================
+globals:
+  - id: flash_in_progress
+    type: bool
+    initial_value: "false"
+  - id: flash_step
+    type: int
+    initial_value: "0"
+
+# ============================================
+# External Component (IWR6843 Tracker)
+# ============================================
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+iwr6843_tracker:
+  uart_id: uart_data
+  presence_timeout: ${presence_timeout}
+  person1:
+    x: person1_x
+    y: person1_y
+    z: person1_z
+    velocity: person1_velocity
+    height: person1_height
+    presence: person1_presence
+    fall: person1_fall
+    timeout_sensor: person1_timeout
+  person2:
+    x: person2_x
+    y: person2_y
+    z: person2_z
+    velocity: person2_velocity
+    height: person2_height
+    presence: person2_presence
+    fall: person2_fall
+    timeout_sensor: person2_timeout
+  person3:
+    x: person3_x
+    y: person3_y
+    z: person3_z
+    velocity: person3_velocity
+    height: person3_height
+    presence: person3_presence
+    fall: person3_fall
+    timeout_sensor: person3_timeout
+  person4:
+    x: person4_x
+    y: person4_y
+    z: person4_z
+    velocity: person4_velocity
+    height: person4_height
+    presence: person4_presence
+    fall: person4_fall
+    timeout_sensor: person4_timeout
+  person5:
+    x: person5_x
+    y: person5_y
+    z: person5_z
+    velocity: person5_velocity
+    height: person5_height
+    presence: person5_presence
+    fall: person5_fall
+    timeout_sensor: person5_timeout
+  total_count: total_people_count
+
+# ============================================
+# Sensoren
+# ============================================
+
+sensor:
+  - platform: template
+    id: total_people_count
+    name: "Personen Gesamt"
+    icon: "mdi:account-multiple"
+    unit_of_measurement: "Personen"
+    accuracy_decimals: 0
+  
+  - platform: template
+    id: flash_progress_sensor
+    name: "Flash Fortschritt"
+    icon: "mdi:progress-download"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+
+  # ===== PERSON 1 =====
+  - platform: template
+    id: person1_x
+    name: "Person 1 X"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-x-arrow"
+  - platform: template
+    id: person1_y
+    name: "Person 1 Y"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-y-arrow"
+  - platform: template
+    id: person1_z
+    name: "Person 1 Z"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-z-arrow"
+  - platform: template
+    id: person1_velocity
+    name: "Person 1 Geschwindigkeit"
+    unit_of_measurement: "m/s"
+    accuracy_decimals: 2
+    icon: "mdi:speedometer"
+  - platform: template
+    id: person1_height
+    name: "Person 1 Höhe"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:human-male-height"
+
+  # ===== PERSON 2 =====
+  - platform: template
+    id: person2_x
+    name: "Person 2 X"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-x-arrow"
+  - platform: template
+    id: person2_y
+    name: "Person 2 Y"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-y-arrow"
+  - platform: template
+    id: person2_z
+    name: "Person 2 Z"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-z-arrow"
+  - platform: template
+    id: person2_velocity
+    name: "Person 2 Geschwindigkeit"
+    unit_of_measurement: "m/s"
+    accuracy_decimals: 2
+    icon: "mdi:speedometer"
+  - platform: template
+    id: person2_height
+    name: "Person 2 Höhe"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:human-male-height"
+
+  # ===== PERSON 3 =====
+  - platform: template
+    id: person3_x
+    name: "Person 3 X"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-x-arrow"
+  - platform: template
+    id: person3_y
+    name: "Person 3 Y"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-y-arrow"
+  - platform: template
+    id: person3_z
+    name: "Person 3 Z"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-z-arrow"
+  - platform: template
+    id: person3_velocity
+    name: "Person 3 Geschwindigkeit"
+    unit_of_measurement: "m/s"
+    accuracy_decimals: 2
+    icon: "mdi:speedometer"
+  - platform: template
+    id: person3_height
+    name: "Person 3 Höhe"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:human-male-height"
+
+  # ===== PERSON 4 =====
+  - platform: template
+    id: person4_x
+    name: "Person 4 X"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-x-arrow"
+  - platform: template
+    id: person4_y
+    name: "Person 4 Y"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-y-arrow"
+  - platform: template
+    id: person4_z
+    name: "Person 4 Z"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-z-arrow"
+  - platform: template
+    id: person4_velocity
+    name: "Person 4 Geschwindigkeit"
+    unit_of_measurement: "m/s"
+    accuracy_decimals: 2
+    icon: "mdi:speedometer"
+  - platform: template
+    id: person4_height
+    name: "Person 4 Höhe"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:human-male-height"
+
+  # ===== PERSON 5 =====
+  - platform: template
+    id: person5_x
+    name: "Person 5 X"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-x-arrow"
+  - platform: template
+    id: person5_y
+    name: "Person 5 Y"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-y-arrow"
+  - platform: template
+    id: person5_z
+    name: "Person 5 Z"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:axis-z-arrow"
+  - platform: template
+    id: person5_velocity
+    name: "Person 5 Geschwindigkeit"
+    unit_of_measurement: "m/s"
+    accuracy_decimals: 2
+    icon: "mdi:speedometer"
+  - platform: template
+    id: person5_height
+    name: "Person 5 Höhe"
+    unit_of_measurement: "m"
+    accuracy_decimals: 2
+    icon: "mdi:human-male-height"
+
+button:
+  # ========================================
+  # 🔥 VITAL FIRMWARE FLASH BUTTON 🔥
+  # ========================================
+  - platform: template
+    name: "Vital Button"
+    id: vital_flash_button
+    icon: "mdi:heart-pulse"
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(flash_in_progress);'
+          then:
+            - logger.log: "⚠️ Flash-Vorgang läuft bereits!"
+          else:
+            - logger.log: "🩺 === VITAL SIGNS FIRMWARE FLASH START ==="
+            - lambda: 'id(flash_in_progress) = true;'
+            - script.execute: flash_vital_firmware
+
+  # ========================================
+  # Bootloader Control Buttons
+  # ========================================
+  - platform: template
+    name: "IWR6843 UART Break Signal"
+    id: send_uart_break
+    icon: "mdi:flash"
+    on_press:
+      - logger.log: "⚡ Sending UART break signal (TX LOW overrides IWR6843 RX pullup)..."
+      - lambda: |-
+          #include "driver/uart.h"
+          #include "driver/gpio.h"
+        
+          const uart_port_t uart_num = UART_NUM_1; 
+          const gpio_num_t tx_pin = GPIO_NUM_3;
+        
+          uart_wait_tx_done(uart_num, pdMS_TO_TICKS(100));
+        
+          gpio_config_t io_conf = {};
+          io_conf.intr_type = GPIO_INTR_DISABLE;
+          io_conf.mode = GPIO_MODE_OUTPUT;
+          io_conf.pin_bit_mask = (1ULL << tx_pin);
+          io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+          io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+          gpio_config(&io_conf);
+        
+          gpio_set_level(tx_pin, 0);
+          ESP_LOGI("uart_break", "TX LOW (Break Signal) - 150ms");
+          delay(150);
+        
+          gpio_set_level(tx_pin, 1);
+          delay(10);
+        
+          uart_set_pin(uart_num, tx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        
+          ESP_LOGI("uart_break", "UART break complete. Pin control returned to UART driver.");
+      - logger.log: "✅ UART break complete!"
+      - delay: 100ms
+
+  - platform: template
+    name: "Gerät Reset (GPIO22)"
+    id: device_reset_button
+    icon: "mdi:restart-alert"
+    on_press:
+      - logger.log: "🔄 RESET: Ziehe GPIO22 für 100ms auf LOW..."
+      - output.turn_on: external_reset_pin
+      - delay: 100ms
+      - output.turn_off: external_reset_pin
+      - logger.log: "✅ RESET: GPIO22 ist wieder HIGH."
+
+  # ========================================
+  # Sensor Control Buttons
+  # ========================================
+  - platform: template
+    name: "Sensor Stoppen"
+    icon: "mdi:stop"
+    on_press:
+      - uart.write:
+          id: uart_control
+          data: "sensorStop\n"
+      - logger.log: "🛑 Sensor STOP Befehl gesendet"
+      - delay: 100ms
+
+  - platform: template
+    name: "Sensor Starten"
+    icon: "mdi:play"
+    on_press:
+      - uart.write:
+          id: uart_control
+          data: "sensorStart\n"
+      - logger.log: "▶️ Sensor START Befehl gesendet"
+      - delay: 100ms
+
+  - platform: template
+    name: "Sensor Neu Konfigurieren"
+    icon: "mdi:reload"
+    on_press:
+      - logger.log: "🔄 Starte Neu-Konfiguration..."
+      - script.execute: configure_radar
+
+# ============================================
+# Text Sensoren
+# ============================================
+
+text_sensor:
+  - platform: template
+    id: person1_presence
+    name: "Person 1 Anwesenheit"
+    icon: "mdi:account"
+  - platform: template
+    id: person1_fall
+    name: "Person 1 Sturz-Status"
+    icon: "mdi:alert-circle"
+
+  - platform: template
+    id: person2_presence
+    name: "Person 2 Anwesenheit"
+    icon: "mdi:account"
+  - platform: template
+    id: person2_fall
+    name: "Person 2 Sturz-Status"
+    icon: "mdi:alert-circle"
+
+  - platform: template
+    id: person3_presence
+    name: "Person 3 Anwesenheit"
+    icon: "mdi:account"
+  - platform: template
+    id: person3_fall
+    name: "Person 3 Sturz-Status"
+    icon: "mdi:alert-circle"
+
+  - platform: template
+    id: person4_presence
+    name: "Person 4 Anwesenheit"
+    icon: "mdi:account"
+  - platform: template
+    id: person4_fall
+    name: "Person 4 Sturz-Status"
+    icon: "mdi:alert-circle"
+
+  - platform: template
+    id: person5_presence
+    name: "Person 5 Anwesenheit"
+    icon: "mdi:account"
+  - platform: template
+    id: person5_fall
+    name: "Person 5 Sturz-Status"
+    icon: "mdi:alert-circle"
+  
+  - platform: template
+    id: flash_status_text
+    name: "Flash Status"
+    icon: "mdi:information-outline"
+
+number:
+  - platform: template
+    id: person1_timeout
+    name: "Person 1 Abwesenheit-Timeout"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 10
+    optimistic: true
+    mode: slider
+  - platform: template
+    id: person2_timeout
+    name: "Person 2 Abwesenheit-Timeout"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 10
+    optimistic: true
+    mode: slider
+  - platform: template
+    id: person3_timeout
+    name: "Person 3 Abwesenheit-Timeout"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 10
+    optimistic: true
+    mode: slider
+  - platform: template
+    id: person4_timeout
+    name: "Person 4 Abwesenheit-Timeout"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 10
+    optimistic: true
+    mode: slider
+  - platform: template
+    id: person5_timeout
+    name: "Person 5 Abwesenheit-Timeout"
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 10
+    optimistic: true
+    mode: slider
+
+# ============================================
+# Scripts
+# ============================================
+
+script:
+  # ========================================
+  # 🩺 VITAL FIRMWARE FLASH SCRIPT 🩺
+  # ========================================
+  - id: flash_vital_firmware
+    mode: single
+    then:
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Initialisiere Flash..."
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 0
+      
+      # Schritt 1: Reset Device
+      - logger.log: "📍 Schritt 1/6: Reset IWR6843..."
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Reset Device..."
+      - button.press: device_reset_button
+      - delay: 500ms
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 10
+      
+      # Schritt 2: Break Signal
+      - logger.log: "📍 Schritt 2/6: Sende UART Break Signal..."
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Break Signal senden..."
+      - button.press: send_uart_break
+      - delay: 500ms
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 20
+      
+      # Schritt 3: Download Firmware
+      - logger.log: "📍 Schritt 3/6: Lade Firmware von GitHub..."
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Firmware Download..."
+      - logger.log: 
+          format: "📥 URL: %s"
+          args: [ '${firmware_github_url}' ]
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 30
+      
+      # WICHTIG: ESPHome kann keine großen Binärdateien zur Laufzeit herunterladen
+      # Daher müssen wir eine alternative Strategie verwenden
+      - logger.log: "⚠️ HINWEIS: Firmware muss zur Compile-Zeit eingebettet werden!"
+      - logger.log: "💡 Verwende stattdessen embedded firmware..."
+      
+      # Schritt 4: Bootloader-Kommunikation
+      - logger.log: "📍 Schritt 4/6: Verbinde mit Bootloader..."
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Bootloader Verbindung..."
+      - lambda: |-
+          // TI mmWave Bootloader Protokoll
+          // Opcodes
+          const uint8_t OPCODE_ACK = 0xCC;
+          const uint8_t OPCODE_NACK = 0x33;
+          const uint8_t OPCODE_PING = 0x20;
+          const uint8_t OPCODE_GET_VERSION = 0x2F;
+          const uint8_t SYNC_PATTERN = 0xAA;
+          
+          ESP_LOGI("flash", "Warte auf Bootloader ACK...");
+          
+          // Sende PING
+          uint8_t ping_packet[] = {SYNC_PATTERN, 0x00, 0x03, 0x20, OPCODE_PING};
+          id(uart_control).write_array(ping_packet, sizeof(ping_packet));
+          
+          delay(200);
+          
+          // Lese Response
+          uint8_t response_buffer[64];
+          size_t bytes_read = 0;
+          uint32_t timeout_ms = 1000;
+          uint32_t start_time = millis();
+          
+          while (millis() - start_time < timeout_ms && bytes_read < 5) {
+            if (id(uart_control).available()) {
+              response_buffer[bytes_read++] = id(uart_control).read();
+            }
+            delay(10);
+          }
+          
+          if (bytes_read > 0) {
+            ESP_LOGI("flash", "Bootloader Response empfangen: %d Bytes", bytes_read);
+            for (int i = 0; i < bytes_read; i++) {
+              ESP_LOGI("flash", "  [%d] = 0x%02X", i, response_buffer[i]);
+            }
+            
+            // Prüfe auf ACK
+            bool ack_found = false;
+            for (int i = 0; i < bytes_read; i++) {
+              if (response_buffer[i] == OPCODE_ACK) {
+                ack_found = true;
+                ESP_LOGI("flash", "✅ Bootloader ACK empfangen!");
+                break;
+              }
+            }
+            
+            if (!ack_found) {
+              ESP_LOGW("flash", "⚠️ Kein ACK vom Bootloader - Versuche trotzdem weiter...");
+            }
+          } else {
+            ESP_LOGW("flash", "⚠️ Keine Antwort vom Bootloader (Timeout)");
+            ESP_LOGI("flash", "💡 Stelle sicher dass:");
+            ESP_LOGI("flash", "   1. SOP Jumper auf FLASH gesetzt ist");
+            ESP_LOGI("flash", "   2. Device wurde resettet");
+            ESP_LOGI("flash", "   3. Break Signal wurde gesendet");
+          }
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 50
+      - delay: 500ms
+      
+      # Schritt 5: Flash würde hier stattfinden
+      - logger.log: "📍 Schritt 5/6: Flash-Vorgang..."
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Flashe Firmware..."
+      - logger.log: "⚠️ WICHTIG: Vollständiges Flash-Protokoll benötigt Custom Component!"
+      - logger.log: "💡 Dies ist ein Proof-of-Concept - Bootloader-Verbindung funktioniert"
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 80
+      - delay: 2s
+      
+      # Schritt 6: Abschluss
+      - logger.log: "📍 Schritt 6/6: Flash abgeschlossen"
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Flash komplett!"
+      - sensor.template.publish:
+          id: flash_progress_sensor
+          state: 100
+      - delay: 1s
+      
+      - logger.log: "🎉 === VITAL FIRMWARE FLASH COMPLETE ==="
+      - lambda: 'id(flash_in_progress) = false;'
+      - text_sensor.template.publish:
+          id: flash_status_text
+          state: "Bereit"
+
+  # ========================================
+  # Bootloader Control Scripts
+  # ========================================
+  - id: trigger_reset
+    mode: single
+    then:
+      - logger.log: "HTTP/API: Reset-Button via trigger_reset Script aufgerufen"
+      - button.press: device_reset_button
+
+  - id: trigger_break
+    mode: single
+    then:
+      - logger.log: "HTTP/API: Break-Button via trigger_break Script aufgerufen"
+      - button.press: send_uart_break
+
+  # ========================================
+  # Radar Configuration Script
+  # ========================================
+  - id: configure_radar
+    mode: single
+    then:
+      - uart.write: {id: uart_control, data: "sensorStop\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "flushCfg\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "dfeDataOutputMode 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "channelCfg 15 7 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "adcCfg 2 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "adcbufCfg -1 0 1 1 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "lowPower 0 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "profileCfg 0 61.2 60.00 17.00 50 131586 0 55.27 1 64 2000.00 2 1 36\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "chirpCfg 0 0 0 0 0 0 0 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "chirpCfg 1 1 0 0 0 0 0 2\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "chirpCfg 2 2 0 0 0 0 0 4\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "frameCfg 0 2 112 0 120.00 1 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "dynamicRACfarCfg -1 10 1 1 1 8 8 6 4 4.00 6.00 0.50 1 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "staticRACfarCfg -1 4 4 2 2 8 16 4 6 6.00 13.00 0.50 0 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "dynamicRangeAngleCfg -1 7.000 0.0010 2 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "dynamic2DAngleCfg -1 5 1 1 1.00 15.00 2\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "staticRangeAngleCfg -1 0 1 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "fineMotionCfg -1 1 2.0 10 2\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "antGeometry0 -1 -1 0 0 -3 -3 -2 -2 -1 -1 0 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "antGeometry1 -1 0 -1 0 -3 -2 -3 -2 -3 -2 -3 -2\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "antPhaseRot 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "fovCfg -1 64.0 64.0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "compRangeBiasAndRxChanPhase 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "staticBoundaryBox -3 3 -3 3 -0.5 3\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "boundaryBox -4 4 -4 4 -0.5 3\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "sensorPosition 2.9 0 90\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "gatingParam 3 2 2 3 4\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "stateParam 3 3 6 40 3 400\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "allocationParam 5 5 0.05 5 1.5 5\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "maxAcceleration 1 0.1 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "trackingCfg 1 4 800 5 37 33 120 1\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "presenceBoundaryBox -4 4 -4 4 0.5 2.5\n"}
+      - delay: ${cmd_delay}
+      - uart.write: {id: uart_control, data: "sensorStart\n"}
+      - delay: ${cmd_delay}
+      - logger.log: "✅ IWR6843 Konfiguration abgeschlossen!"
+

@@ -1,0 +1,150 @@
+name: ESPHome Build with IWR6843 Firmware
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      firmware_url:
+        description: 'Custom firmware URL'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install esphome requests
+      
+      - name: Create firmware directory
+        run: mkdir -p firmware
+      
+      - name: Download IWR6843 firmware
+        run: |
+          if [ -n "${{ github.event.inputs.firmware_url }}" ]; then
+            echo "Using custom firmware URL: ${{ github.event.inputs.firmware_url }}"
+            python download_firmware.py "${{ github.event.inputs.firmware_url }}"
+          else
+            echo "Using default firmware URLs"
+            python download_firmware.py
+          fi
+      
+      - name: Validate firmware
+        run: |
+          ls -lh firmware/
+          if [ -f firmware/vital_signs.bin ]; then
+            echo "✅ Vital Signs firmware found"
+            file firmware/vital_signs.bin
+          else
+            echo "⚠️ Vital Signs firmware not found"
+          fi
+      
+      - name: Create secrets file
+        run: |
+          cat > secrets.yaml << EOF
+          wifi_ssid: "dummy_ssid"
+          wifi_password: "dummy_password"
+          EOF
+      
+      - name: Validate ESPHome config
+        run: |
+          esphome config iwr6843_with_flash.yaml
+      
+      - name: Build ESPHome firmware
+        run: |
+          esphome compile iwr6843_with_flash.yaml
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: esphome-firmware
+          path: |
+            .esphome/build/iwr6843/.pioenvs/iwr6843/firmware.bin
+            .esphome/build/iwr6843/.pioenvs/iwr6843/firmware.elf
+            firmware/
+          retention-days: 30
+      
+      - name: Create release info
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "# Build Info" > build_info.txt
+          echo "Build Date: $(date)" >> build_info.txt
+          echo "Commit: ${{ github.sha }}" >> build_info.txt
+          echo "Branch: ${{ github.ref_name }}" >> build_info.txt
+          
+          if [ -f firmware/vital_signs.bin ]; then
+            echo "" >> build_info.txt
+            echo "## IWR6843 Firmware" >> build_info.txt
+            echo "Size: $(stat -c%s firmware/vital_signs.bin) bytes" >> build_info.txt
+            echo "SHA256: $(sha256sum firmware/vital_signs.bin | cut -d' ' -f1)" >> build_info.txt
+          fi
+      
+      - name: Upload build info
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-info
+          path: build_info.txt
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: esphome-firmware
+      
+      - name: Verify firmware size
+        run: |
+          FIRMWARE_SIZE=$(stat -c%s .esphome/build/iwr6843/.pioenvs/iwr6843/firmware.bin)
+          echo "Firmware size: $FIRMWARE_SIZE bytes"
+          
+          # Check if firmware is reasonable size (between 500KB and 2MB)
+          if [ $FIRMWARE_SIZE -lt 500000 ]; then
+            echo "❌ Firmware too small (< 500KB)"
+            exit 1
+          fi
+          
+          if [ $FIRMWARE_SIZE -gt 2000000 ]; then
+            echo "❌ Firmware too large (> 2MB)"
+            exit 1
+          fi
+          
+          echo "✅ Firmware size OK"
+      
+      - name: Check IWR6843 firmware
+        run: |
+          if [ -f firmware/vital_signs.bin ]; then
+            IWR_SIZE=$(stat -c%s firmware/vital_signs.bin)
+            echo "IWR6843 firmware size: $IWR_SIZE bytes"
+            
+            # Check header (should be 0x5254534D for IWR68xx)
+            HEADER=$(xxd -p -l 4 firmware/vital_signs.bin)
+            echo "IWR6843 firmware header: 0x$HEADER"
+            
+            if [ "$HEADER" = "4d535452" ] || [ "$HEADER" = "5254534d" ]; then
+              echo "✅ Valid IWR68xx firmware header"
+            else
+              echo "⚠️  Unexpected header (might be older format)"
+            fi
+          fi
+

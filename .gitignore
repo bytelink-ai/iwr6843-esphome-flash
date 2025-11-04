@@ -1,0 +1,69 @@
+# ESPHome
+.esphome/
+*.pyc
+__pycache__/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Secrets
+secrets.yaml
+*.secret
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Firmware (optional - entfernen wenn Firmware committed werden soll)
+# firmware/*.bin
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated files
+firmware_config_generated.yaml
+build_info.txt
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+

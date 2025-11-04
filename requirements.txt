@@ -1,0 +1,15 @@
+# Python Requirements für IWR6843AOP Flash Tool
+
+# ESPHome
+esphome>=2023.11.0
+
+# Serial Communication
+pyserial>=3.5
+
+# HTTP Requests
+requests>=2.31.0
+
+# Optional: für erweiterte Features
+aioesphomeapi>=18.0.0  # ESPHome API Client
+pyyaml>=6.0           # YAML parsing
+
